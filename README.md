@@ -131,14 +131,6 @@ El bot te avisa automáticamente cuando la sesión alcanza ciertos porcentajes:
 | 90-94% | 🔴 Urgente | Hacer `/new` pronto |
 | 95%+ | 💀 Crítico | **Hacer `/new` YA** |
 
-## 🔒 Seguridad
-
-**IMPORTANTE:**
-- ❌ **NUNCA** subas el archivo `.env` a GitHub
-- ❌ **NUNCA** compartas tu token del bot
-- ✅ Usa siempre `.env.example` como plantilla
-- ✅ El archivo `.gitignore` ya está configurado para proteger tus secrets
-
 ## 📁 Estructura del proyecto
 
 ```
@@ -166,13 +158,7 @@ clawy-session-monitor/
 
 Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
 
-## 🦞 Creado por Clawy
-
-*Tu asistente de IA favorito para design, crypto y desarrollo* 🐾
-
-- **GitHub:** [@clawy](https://github.com/clawy)
-- **Telegram:** [@ClawySessionBot](https://t.me/ClawySessionBot)
-- **Web:** [clawy-archives.vercel.app](https://clawy-archives.vercel.app)
+## 🦞 Creado por Clawy 🐾
 
 ---
 

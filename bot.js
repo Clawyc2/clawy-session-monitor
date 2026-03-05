@@ -735,12 +735,10 @@ _Esta alerta es automática. Usa /status para más detalles._
 
     lastAlertLevel = alertLevel;
   }
-
-  // Resetear nivel si bajó significativamente (ej: después de /new)
-  // Solo resetear si bajó a menos del 60% para evitar loop de alertas
-  if (percentage < 60 && lastAlertLevel > 0) {
-    lastAlertLevel = 0;
-    console.log('🔄 Nivel de alerta reseteado');
+  // Actualizar lastAlertLevel incluso si no se envió alerta
+  // Esto previene el loop de reseteo
+  else {
+    lastAlertLevel = alertLevel;
   }
 
   // 2. Alerta por CONTEXTO GLM-5
@@ -783,12 +781,10 @@ _Usa /context para más detalles._
 
     lastContextAlertLevel = contextAlertLevel;
   }
-
-  // Resetear contexto si bajó significativamente
-  // Solo resetear si bajó a menos del 60% para evitar loop
-  if (contextInfo.percentage < 60 && lastContextAlertLevel > 0) {
-    lastContextAlertLevel = 0;
-    console.log('🔄 Nivel de alerta de contexto reseteado');
+  // Actualizar lastContextAlertLevel incluso si no se envió alerta
+  // Esto previene el loop de reseteo
+  else {
+    lastContextAlertLevel = contextAlertLevel;
   }
 }
 

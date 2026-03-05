@@ -54,6 +54,11 @@ const THRESHOLDS = {
 // Límite estimado de sesión (en MB) - ajustar según experiencia
 const SESSION_LIMIT_MB = 10; // 10 MB es un límite seguro
 
+// Context Window de GLM-5 (Plan Max Anual - 200K tokens reales)
+// Usamos 180K como límite "práctico" para dejar margen de seguridad (90% del límite real)
+const GLM5_CONTEXT_LIMIT = 180000; // 180K tokens (deja 20K de margen)
+const SYSTEM_PROMPT_OVERHEAD = 5000; // Tokens estimados de system prompt base
+
 // Crear bot
 const bot = new TelegramBot(BOTTOKEN, { polling: true });
 
@@ -94,6 +99,113 @@ function getRecommendation(percentage) {
   } else {
     return '💀 CRÍTICO: Sesión puede fallar. Haz /new YA.';
   }
+}
+
+// ===================== ANÁLISIS DE CONTEXTO GLM-5 =====================
+
+function estimateTokens(text) {
+  // Aproximación: 1 token ≈ 4 caracteres para texto normal
+  // Para código: 1 token ≈ 3 caracteres
+  return Math.ceil(text.length / 4);
+}
+
+function getFileTokens(filePath) {
+  try {
+    const content = fs.readFileSync(filePath, 'utf8');
+    return estimateTokens(content);
+  } catch (err) {
+    return 0;
+  }
+}
+
+function analyzeContextUsage() {
+  const contextBreakdown = {
+    systemPrompts: 0,
+    memoryFiles: 0,
+    sessionHistory: 0,
+    dailyMemory: 0,
+    total: 0
+  };
+
+  const fileDetails = [];
+
+  // 1. System prompts (ARCHIVOS INYECTADOS)
+  const systemFiles = [
+    { path: path.join(WORKSPACE_PATH, 'AGENTS.md'), name: 'AGENTS.md' },
+    { path: path.join(WORKSPACE_PATH, 'SOUL.md'), name: 'SOUL.md' },
+    { path: path.join(WORKSPACE_PATH, 'USER.md'), name: 'USER.md' },
+    { path: path.join(WORKSPACE_PATH, 'IDENTITY.md'), name: 'IDENTITY.md' },
+    { path: path.join(WORKSPACE_PATH, 'TOOLS.md'), name: 'TOOLS.md' },
+    { path: path.join(WORKSPACE_PATH, 'HEARTBEAT.md'), name: 'HEARTBEAT.md' },
+    { path: path.join(WORKSPACE_PATH, 'MEMORY.md'), name: 'MEMORY.md' }
+  ];
+
+  for (const file of systemFiles) {
+    const tokens = getFileTokens(file.path);
+    if (tokens > 0) {
+      contextBreakdown.systemPrompts += tokens;
+      fileDetails.push({ name: file.name, tokens, type: 'system' });
+    }
+  }
+
+  // 2. Memory files del día actual
+  const today = new Date();
+  const dateStr = today.toISOString().split('T')[0]; // YYYY-MM-DD
+  const memoryPath = path.join(WORKSPACE_PATH, 'memory');
+
+  try {
+    if (fs.existsSync(memoryPath)) {
+      const memoryFiles = fs.readdirSync(memoryPath);
+
+      // Archivos de hoy
+      const todayFiles = memoryFiles.filter(f => f.startsWith(dateStr));
+      for (const file of todayFiles) {
+        const tokens = getFileTokens(path.join(memoryPath, file));
+        contextBreakdown.dailyMemory += tokens;
+        fileDetails.push({ name: `memory/${file}`, tokens, type: 'daily' });
+      }
+
+      // Archivos de ayer también (por si acaso)
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().split('T')[0];
+      const yesterdayFiles = memoryFiles.filter(f => f.startsWith(yesterdayStr));
+      for (const file of yesterdayFiles) {
+        const tokens = getFileTokens(path.join(memoryPath, file));
+        contextBreakdown.dailyMemory += tokens;
+        fileDetails.push({ name: `memory/${file}`, tokens, type: 'daily' });
+      }
+    }
+  } catch (err) {}
+
+  // 3. Sesión actual
+  const currentSession = getCurrentSession();
+  if (currentSession) {
+    const sessionData = analyzeSession(currentSession);
+    contextBreakdown.sessionHistory = sessionData.estimatedTokens;
+    fileDetails.push({ name: currentSession, tokens: sessionData.estimatedTokens, type: 'session' });
+  }
+
+  // 4. System prompt overhead (configuración interna de OpenClaw)
+  contextBreakdown.systemPrompts += SYSTEM_PROMPT_OVERHEAD;
+  fileDetails.push({ name: '[System Prompt Base]', tokens: SYSTEM_PROMPT_OVERHEAD, type: 'system' });
+
+  // Total
+  contextBreakdown.total = contextBreakdown.systemPrompts +
+                            contextBreakdown.memoryFiles +
+                            contextBreakdown.sessionHistory +
+                            contextBreakdown.dailyMemory;
+
+  // Porcentaje
+  const percentage = (contextBreakdown.total / GLM5_CONTEXT_LIMIT) * 100;
+
+  return {
+    breakdown: contextBreakdown,
+    fileDetails: fileDetails.sort((a, b) => b.tokens - a.tokens),
+    totalTokens: contextBreakdown.total,
+    percentage: Math.min(percentage, 100),
+    remainingTokens: GLM5_CONTEXT_LIMIT - contextBreakdown.total
+  };
 }
 
 // ===================== ANÁLISIS DE SESIÓN =====================
@@ -195,10 +307,49 @@ function getAllSessions() {
 
 // ===================== COMANDOS DEL BOT =====================
 
+// Comando /context - NUEVO: Monitorea contexto GLM-5
+bot.onText(/\/context/, (msg) => {
+  const chatId = msg.chat.id;
+
+  const contextInfo = analyzeContextUsage();
+  const emoji = getStatusEmoji(contextInfo.percentage);
+
+  // Top 5 archivos que más contribuyen
+  const topFiles = contextInfo.fileDetails.slice(0, 5);
+  let filesList = '';
+  for (const file of topFiles) {
+    const typeEmoji = file.type === 'session' ? '💬' : file.type === 'daily' ? '📝' : '📄';
+    filesList += `${typeEmoji} ${file.name}: ${file.tokens.toLocaleString()} tokens\n`;
+  }
+
+  const message = `
+${emoji} *CONTEXTO GLM-5*
+
+📊 ${getProgressBar(contextInfo.percentage)}
+
+🧠 *Tokens:* ${contextInfo.totalTokens.toLocaleString()} / ${GLM5_CONTEXT_LIMIT.toLocaleString()}
+📉 *Disponible:* ${contextInfo.remainingTokens.toLocaleString()} tokens
+
+*Desglose:*
+📄 System: ${contextInfo.breakdown.systemPrompts.toLocaleString()}
+📝 Memoria: ${contextInfo.breakdown.dailyMemory.toLocaleString()}
+💬 Sesión: ${contextInfo.breakdown.sessionHistory.toLocaleString()}
+
+*Top contribuyentes:*
+${filesList}
+
+${getRecommendation(contextInfo.percentage)}
+
+_Tu contexto se llena con: archivos inyectados + historial de chat + memoria_
+`;
+
+  bot.sendMessage(chatId, message, { parse_mode: 'Markdown' });
+});
+
 // Comando /start
 bot.onText(/\/start/, (msg) => {
   const chatId = msg.chat.id;
-  
+
   // Autorizar este chat para recibir alertas
   authorizeChat(chatId);
 
@@ -216,6 +367,7 @@ Recibirás notificaciones automáticas en:
 
 📊 *Comandos disponibles:*
 
+/context - 🆕 Ver uso de contexto GLM-5
 /status - Ver estado actual de la sesión
 /summary - Resumen detallado
 /history - Historial de sesiones
@@ -230,7 +382,7 @@ Recibirás notificaciones automáticas en:
 🔴 90-94%: Urgente
 💀 95%+: Crítico
 
-_Usa /status para ver el estado actual_
+_Usa /context para ver tu uso actual de contexto_
 `;
 
   bot.sendMessage(chatId, welcome, { parse_mode: 'Markdown' });
@@ -423,7 +575,7 @@ _Para cambiar la configuración, edita el archivo:_
 // Comando /help
 bot.onText(/\/help/, (msg) => {
   const chatId = msg.chat.id;
-  
+
   const message = `
 ❓ *AYUDA - Clawy Session Monitor*
 
@@ -435,6 +587,7 @@ Las sesiones muy grandes pueden:
 • Hacer que Clawy sea más lento
 • Consumir más tokens
 • Perder contexto antiguo
+• **Truncar el contexto del modelo** (model_context_window_exceeded)
 
 *¿Cuándo debo hacer /new?*
 • 🟢 0-69%: No es necesario
@@ -445,11 +598,26 @@ Las sesiones muy grandes pueden:
 
 *Comandos:*
 /start - Iniciar bot
+/context - 🆕 Ver uso de contexto GLM-5
 /status - Estado rápido
 /summary - Resumen detallado
 /history - Historial de sesiones
+/alerts - Gestionar alertas
 /config - Ver configuración
 /help - Esta ayuda
+
+*¿Qué es /context?*
+El comando \`/context\` monitorea específicamente el **context window de GLM-5** (128K tokens). Te muestra:
+• Tokens usados y disponibles
+• Porcentaje de contexto usado
+• Desglose por tipo (system, memoria, sesión)
+• Top archivos que más contribuyen
+
+*¿Por qué se llena el contexto?*
+• Archivos inyectados (AGENTS.md, SOUL.md, MEMORY.md)
+• Historial de conversación
+• Sesiones de Moltbook (generan mucho texto)
+• System prompt base (~5K tokens)
 
 _¿Preguntas? Habla con Luis o Clawy_ 🦞
 `;
@@ -490,6 +658,7 @@ bot.on('callback_query', (query) => {
 // ===================== ALERTAS AUTOMÁTICAS =====================
 
 let lastAlertLevel = 0;
+let lastContextAlertLevel = 0; // NUEVO: Para alertas de contexto
 let authorizedChatIds = new Set(); // Chats autorizados para recibir alertas
 
 // Cargar chats autorizados desde archivo
@@ -525,6 +694,7 @@ function authorizeChat(chatId) {
 }
 
 function checkAndAlert() {
+  // 1. Alerta por tamaño de sesión
   const currentSession = getCurrentSession();
   if (!currentSession) return;
 
@@ -538,7 +708,8 @@ function checkAndAlert() {
   else if (percentage >= THRESHOLDS.recommend) alertLevel = 2;
   else if (percentage >= THRESHOLDS.warning) alertLevel = 1;
 
-  // Si el nivel aumentó, enviar alerta a TODOS los chats autorizados
+  // SOLO enviar alerta cuando hay PROBLEMA real (>= 70%)
+  // NO enviar cuando está saludable
   if (alertLevel > lastAlertLevel && alertLevel >= 1) {
     const emoji = getStatusEmoji(percentage);
     const alertMessage = `
@@ -565,10 +736,59 @@ _Esta alerta es automática. Usa /status para más detalles._
     lastAlertLevel = alertLevel;
   }
 
-  // Resetear nivel si bajó (ej: después de /new)
-  if (percentage < 50 && lastAlertLevel > 0) {
+  // Resetear nivel si bajó significativamente (ej: después de /new)
+  // Solo resetear si bajó a menos del 60% para evitar loop de alertas
+  if (percentage < 60 && lastAlertLevel > 0) {
     lastAlertLevel = 0;
     console.log('🔄 Nivel de alerta reseteado');
+  }
+
+  // 2. Alerta por CONTEXTO GLM-5
+  const contextInfo = analyzeContextUsage();
+  let contextAlertLevel = 0;
+
+  if (contextInfo.percentage >= THRESHOLDS.critical * 100) contextAlertLevel = 4;
+  else if (contextInfo.percentage >= THRESHOLDS.urgent * 100) contextAlertLevel = 3;
+  else if (contextInfo.percentage >= THRESHOLDS.recommend * 100) contextAlertLevel = 2;
+  else if (contextInfo.percentage >= THRESHOLDS.warning * 100) contextAlertLevel = 1;
+
+  // SOLO enviar alerta de contexto cuando hay PROBLEMA real (>= 70%)
+  if (contextAlertLevel > lastContextAlertLevel && contextAlertLevel >= 1) {
+    const emoji = getStatusEmoji(contextInfo.percentage);
+    const contextAlertMessage = `
+${emoji} *ALERTA DE CONTEXTO GLM-5*
+
+${getProgressBar(contextInfo.percentage)}
+
+🧠 *Tokens:* ${contextInfo.totalTokens.toLocaleString()} / ${GLM5_CONTEXT_LIMIT.toLocaleString()}
+📉 *Disponible:* ${contextInfo.remainingTokens.toLocaleString()} tokens
+
+*Top contribuyentes:*
+📄 System: ${contextInfo.breakdown.systemPrompts.toLocaleString()}
+📝 Memoria: ${contextInfo.breakdown.dailyMemory.toLocaleString()}
+💬 Sesión: ${contextInfo.breakdown.sessionHistory.toLocaleString()}
+
+${getRecommendation(contextInfo.percentage)}
+
+_El contexto se llena con archivos + historial + memoria_
+_Usa /context para más detalles._
+`;
+
+    // Enviar a todos los chats autorizados
+    authorizedChatIds.forEach(chatId => {
+      bot.sendMessage(chatId, contextAlertMessage, { parse_mode: 'Markdown' })
+        .then(() => console.log('📤 Alerta de contexto enviada a:', chatId))
+        .catch(err => console.error('Error enviando alerta de contexto:', err));
+    });
+
+    lastContextAlertLevel = contextAlertLevel;
+  }
+
+  // Resetear contexto si bajó significativamente
+  // Solo resetear si bajó a menos del 60% para evitar loop
+  if (contextInfo.percentage < 60 && lastContextAlertLevel > 0) {
+    lastContextAlertLevel = 0;
+    console.log('🔄 Nivel de alerta de contexto reseteado');
   }
 }
 

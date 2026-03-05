@@ -664,7 +664,7 @@ let authorizedChatIds = new Set(); // Chats autorizados para recibir alertas
 // Cargar chats autorizados desde archivo
 function loadAuthorizedChats() {
   try {
-    const data = fs.readFileSync('/home/ubuntu/.openclaw/workspace/clawy-session-monitor/authorized_chats.json', 'utf8');
+    const data = fs.readFileSync('/home/ubuntu/.openclaw/workspace/projects/bots/clawy-session-monitor/authorized_chats.json', 'utf8');
     const chats = JSON.parse(data);
     authorizedChatIds = new Set(chats);
     console.log('📱 Chats autorizados cargados:', authorizedChatIds.size);
@@ -678,7 +678,7 @@ function loadAuthorizedChats() {
 function saveAuthorizedChats() {
   try {
     fs.writeFileSync(
-      '/home/ubuntu/.openclaw/workspace/clawy-session-monitor/authorized_chats.json',
+      '/home/ubuntu/.openclaw/workspace/projects/bots/clawy-session-monitor/authorized_chats.json',
       JSON.stringify([...authorizedChatIds])
     );
   } catch (err) {
